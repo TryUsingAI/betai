@@ -1,103 +1,151 @@
-import Image from "next/image";
+'use client';
+import { useEffect, useState } from 'react';
+import { supabase } from '@/lib/supabase-browser';
+
+type Profile = { user_id: string; username: string | null; role: string | null };
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const [magicEmail, setMagicEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [status, setStatus] = useState('idle');
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+  async function loadProfile(uid: string) {
+    const { data } = await supabase
+      .from('profiles')
+      .select('user_id, username, role')
+      .eq('user_id', uid)
+      .maybeSingle();
+    if (data) setProfile(data as Profile);
+  }
+
+  // Create profile + wallet only if missing. Never overwrite username.
+  async function ensureProfileAndSeed(uid: string) {
+    const { data: prof } = await supabase
+      .from('profiles')
+      .select('user_id')
+      .eq('user_id', uid)
+      .maybeSingle();
+    if (!prof) {
+      await supabase.from('profiles').insert({ user_id: uid });
+    }
+    await supabase.rpc('seed_wallet_if_needed', { _user: uid });
+    await loadProfile(uid);
+  }
+
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      const uid = data.user?.id ?? null;
+      setSessionUserId(uid);
+      if (uid) await ensureProfileAndSeed(uid);
+      else setProfile(null);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_e, sess) => {
+      const uid = sess?.user?.id ?? null;
+      setSessionUserId(uid);
+      if (uid) await ensureProfileAndSeed(uid);
+      else setProfile(null);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  async function handleEmailPassword() {
+    setStatus('working');
+    const { data: si, error: siErr } = await supabase.auth.signInWithPassword({ email, password: pw });
+    if (!siErr && si?.user) { setStatus('ok'); return; }
+    const { error: suErr } = await supabase.auth.signUp({ email, password: pw });
+    setStatus(suErr ? 'error: ' + suErr.message : 'check your email to confirm');
+  }
+
+  async function handleMagicLink() {
+    setStatus('working');
+    const { error } = await supabase.auth.signInWithOtp({
+      email: magicEmail,
+      options: { emailRedirectTo: window.location.origin }
+    });
+    setStatus(error ? 'error: ' + error.message : 'sent');
+  }
+
+  async function handleGoogle() {
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin }
+    });
+  }
+
+  async function saveUsername() {
+    if (!sessionUserId || !username.trim()) return;
+    setStatus('working');
+    const { error } = await supabase
+      .from('profiles')
+      .update({ username: username.trim() })
+      .eq('user_id', sessionUserId);
+    setStatus(error ? 'error: ' + error.message : 'ok');
+    if (!error) await loadProfile(sessionUserId);
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    setSessionUserId(null);
+    setProfile(null);
+    window.location.assign('/'); // hard reset
+  }
+
+  return (
+    <main style={{ maxWidth: 560, margin: '48px auto', fontFamily: 'system-ui, sans-serif' }}>
+      <h1>betai — auth smoke test</h1>
+
+      {!sessionUserId && (
+        <>
+          <section style={{ marginTop: 24, padding: 16, border: '1px solid #444' }}>
+            <h2>Email + Password</h2>
+            <input placeholder="email" value={email} onChange={e => setEmail(e.target.value)} />
+            <input placeholder="password" type="password" value={pw} onChange={e => setPw(e.target.value)} />
+            <button onClick={handleEmailPassword}>Sign up / Sign in</button>
+          </section>
+
+          <section style={{ marginTop: 16, padding: 16, border: '1px solid #444' }}>
+            <h2>Magic Link</h2>
+            <input placeholder="email for magic link" value={magicEmail} onChange={e => setMagicEmail(e.target.value)} />
+            <button onClick={handleMagicLink}>Send link</button>
+          </section>
+
+          <section style={{ marginTop: 16, padding: 16, border: '1px solid #444' }}>
+            <h2>Google</h2>
+            <button onClick={handleGoogle}>Continue with Google</button>
+          </section>
+        </>
+      )}
+
+      {!!sessionUserId && (
+        <section style={{ marginTop: 24, padding: 16, border: '1px solid #444' }}>
+          <p><strong>User:</strong> {sessionUserId}</p>
+          <p><strong>Role:</strong> {profile?.role ?? '—'}</p>
+          <p><strong>Username:</strong> {profile?.username ?? '(not set)'}</p>
+
+          {!profile?.username && (
+            <div style={{ marginTop: 12 }}>
+              <input placeholder="choose a username" value={username} onChange={e => setUsername(e.target.value)} />
+              <button onClick={saveUsername}>Save username</button>
+            </div>
+          )}
+
+          <div style={{ marginTop: 12 }}>
+            <button onClick={logout}>Log out</button>
+          </div>
+        </section>
+      )}
+
+      <p style={{ marginTop: 16, color: '#888' }}>status: {status}</p>
+
+      <style jsx global>{`
+        input { display:block; margin:8px 0; padding:8px; width:100%; }
+        button { padding:8px 12px; }
+        h1,h2 { margin: 0 0 8px 0; }
+      `}</style>
+    </main>
   );
 }
