@@ -1,22 +1,36 @@
 // src/app/api/admin/update-odds/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
 import { requireRoleFromHeader } from '@/lib/requireRole';
 import { ODDS_BASE, ODDS_KEY, sportKey } from '@/lib/oddsapi';
 import type { Game } from '@/lib/odds-types';
+import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'default-no-store';
 
+const BOOK_PRIORITY = ['betmgm','draftkings','fanduel','caesars','pointsbet','betus','wynnbet'];
+
+function pickBookmaker(g: Game) {
+  for (const key of BOOK_PRIORITY) {
+    const b = g.bookmakers.find(b => b.key === key && (b.markets?.length ?? 0) > 0);
+    if (b) return b;
+  }
+  return g.bookmakers.find(b => (b.markets?.length ?? 0) > 0) ?? null;
+}
+
+function outcomeSide(marketKey: string, oName: string, homeTeam: string): 'home'|'away'|'over'|'under' {
+  const name = oName.toLowerCase();
+  if (marketKey === 'totals') {
+    return name.includes('over') ? 'over' : 'under';
+  }
+  return name.includes(homeTeam.toLowerCase()) ? 'home' : 'away';
+}
+
 export async function POST(req: NextRequest) {
-  // Require admin via Authorization: Bearer <token> (cookie fallback is in requireRole*)
   await requireRoleFromHeader(req, 'admin');
 
   const sport = (req.nextUrl.searchParams.get('sport') ?? 'nfl') as 'nfl' | 'nba' | 'nhl' | 'ncaaf';
-
-  // No "bookmakers=" filter so we always have a fallback
   const url =
     `${ODDS_BASE}/sports/${sportKey(sport)}/odds` +
     `?apiKey=${ODDS_KEY}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
@@ -28,19 +42,14 @@ export async function POST(req: NextRequest) {
 
   const games: Game[] = await res.json();
 
-  // Server-side Supabase client (service role for writes)
-  const cookieStore = await cookies();
-  const supabase = createServerClient(
+  const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { cookies: { get: (n) => cookieStore.get(n)?.value } }
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const preferred = (process.env.PRIMARY_BOOKMAKER ?? '').toLowerCase();
   let snapsInserted = 0;
 
   for (const g of games) {
-    // Find our event by external id
     const { data: ev } = await supabase
       .from('sports_events')
       .select('id')
@@ -48,29 +57,28 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
     if (!ev) continue;
 
-    // Prefer PRIMARY_BOOKMAKER, else first available
-    const bookmaker =
-      g.bookmakers.find((b) => b.key.toLowerCase() === preferred) ?? g.bookmakers[0];
+    const bookmaker = pickBookmaker(g);
     if (!bookmaker) continue;
 
-    for (const m of bookmaker.markets) {
-      for (const o of m.outcomes) {
-        const side =
-          o.name.toLowerCase().includes('over') ? 'over' :
-          o.name.toLowerCase().includes('under') ? 'under' :
-          o.name.toLowerCase().includes(g.home_team.toLowerCase()) ? 'home' : 'away';
+    const rows: any[] = [];
+    for (const m of bookmaker.markets ?? []) {
+      if (!m?.outcomes?.length) continue;
 
-        const { error } = await supabase.from('event_odds_snapshots').insert({
+      for (const o of m.outcomes) {
+        rows.push({
           event_id: ev.id,
           bookmaker: bookmaker.key,
           market: m.key,
-          side,
-          american_odds: o.price,
+          side: outcomeSide(m.key, o.name, g.home_team),
+          american_odds: Number(o.price),
           line: o.point ?? null,
         });
-
-        if (!error) snapsInserted++;
       }
+    }
+
+    if (rows.length) {
+      const { error } = await supabase.from('event_odds_snapshots').insert(rows);
+      if (!error) snapsInserted += rows.length;
     }
   }
 
