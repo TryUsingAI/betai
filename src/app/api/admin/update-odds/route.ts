@@ -9,17 +9,37 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'default-no-store';
 
-const BOOK_PRIORITY = ['betmgm','draftkings','fanduel','caesars','pointsbet','betus','wynnbet'];
+type MarketKey = 'h2h' | 'spreads' | 'totals';
+type SnapshotSide = 'home' | 'away' | 'over' | 'under';
 
-function pickBookmaker(g: Game) {
+type SnapshotRow = {
+  event_id: string;
+  bookmaker: string;
+  market: MarketKey;
+  side: SnapshotSide;
+  american_odds: number;
+  line: number | null;
+};
+
+const BOOK_PRIORITY = ['betmgm', 'draftkings', 'fanduel', 'caesars', 'pointsbet', 'betus', 'wynnbet'];
+
+function pickBookmaker(
+  g: Game
+): (Game['bookmakers'][number]) | null {
   for (const key of BOOK_PRIORITY) {
-    const b = g.bookmakers.find(b => b.key === key && (b.markets?.length ?? 0) > 0);
+    const b = g.bookmakers.find(
+      (b) => b.key === key && (b.markets?.length ?? 0) > 0
+    );
     if (b) return b;
   }
-  return g.bookmakers.find(b => (b.markets?.length ?? 0) > 0) ?? null;
+  return g.bookmakers.find((b) => (b.markets?.length ?? 0) > 0) ?? null;
 }
 
-function outcomeSide(marketKey: string, oName: string, homeTeam: string): 'home'|'away'|'over'|'under' {
+function outcomeSide(
+  marketKey: string,
+  oName: string,
+  homeTeam: string
+): SnapshotSide {
   const name = oName.toLowerCase();
   if (marketKey === 'totals') {
     return name.includes('over') ? 'over' : 'under';
@@ -60,18 +80,20 @@ export async function POST(req: NextRequest) {
     const bookmaker = pickBookmaker(g);
     if (!bookmaker) continue;
 
-    const rows: any[] = [];
+    const rows: SnapshotRow[] = [];
+
     for (const m of bookmaker.markets ?? []) {
       if (!m?.outcomes?.length) continue;
+      const marketKey = (m.key as MarketKey);
 
       for (const o of m.outcomes) {
         rows.push({
           event_id: ev.id,
           bookmaker: bookmaker.key,
-          market: m.key,
-          side: outcomeSide(m.key, o.name, g.home_team),
+          market: marketKey,
+          side: outcomeSide(marketKey, o.name, g.home_team),
           american_odds: Number(o.price),
-          line: o.point ?? null,
+          line: typeof o.point === 'number' ? o.point : (o.point == null ? null : Number(o.point)),
         });
       }
     }
