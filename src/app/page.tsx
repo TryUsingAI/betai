@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase-browser';
 
 type Profile = { user_id: string; username: string | null; role: string | null };
@@ -13,49 +13,65 @@ export default function Home() {
   const [username, setUsername] = useState('');
   const [status, setStatus] = useState('idle');
 
-  async function loadProfile(uid: string) {
+  const loadProfile = useCallback(async (uid: string) => {
     const { data } = await supabase
       .from('profiles')
       .select('user_id, username, role')
       .eq('user_id', uid)
       .maybeSingle();
     if (data) setProfile(data as Profile);
-  }
+  }, []);
 
   // Create profile + wallet only if missing. Never overwrite username.
-  async function ensureProfileAndSeed(uid: string) {
-    const { data: prof } = await supabase
-      .from('profiles')
-      .select('user_id')
-      .eq('user_id', uid)
-      .maybeSingle();
-    if (!prof) {
-      await supabase.from('profiles').insert({ user_id: uid });
-    }
-    await supabase.rpc('seed_wallet_if_needed', { _user: uid });
-    await loadProfile(uid);
-  }
+  const ensureProfileAndSeed = useCallback(
+    async (uid: string) => {
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('user_id')
+        .eq('user_id', uid)
+        .maybeSingle();
+
+      if (!prof) {
+        await supabase.from('profiles').insert({ user_id: uid });
+      }
+      await supabase.rpc('seed_wallet_if_needed', { _user: uid });
+      await loadProfile(uid);
+    },
+    [loadProfile]
+  );
 
   useEffect(() => {
+    let active = true;
+
     supabase.auth.getUser().then(async ({ data }) => {
+      if (!active) return;
       const uid = data.user?.id ?? null;
       setSessionUserId(uid);
       if (uid) await ensureProfileAndSeed(uid);
       else setProfile(null);
     });
+
     const { data: sub } = supabase.auth.onAuthStateChange(async (_e, sess) => {
+      if (!active) return;
       const uid = sess?.user?.id ?? null;
       setSessionUserId(uid);
       if (uid) await ensureProfileAndSeed(uid);
       else setProfile(null);
     });
-    return () => sub.subscription.unsubscribe();
-  }, []);
+
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [ensureProfileAndSeed]);
 
   async function handleEmailPassword() {
     setStatus('working');
     const { data: si, error: siErr } = await supabase.auth.signInWithPassword({ email, password: pw });
-    if (!siErr && si?.user) { setStatus('ok'); return; }
+    if (!siErr && si?.user) {
+      setStatus('ok');
+      return;
+    }
     const { error: suErr } = await supabase.auth.signUp({ email, password: pw });
     setStatus(suErr ? 'error: ' + suErr.message : 'check your email to confirm');
   }
@@ -64,7 +80,7 @@ export default function Home() {
     setStatus('working');
     const { error } = await supabase.auth.signInWithOtp({
       email: magicEmail,
-      options: { emailRedirectTo: window.location.origin }
+      options: { emailRedirectTo: window.location.origin },
     });
     setStatus(error ? 'error: ' + error.message : 'sent');
   }
@@ -72,7 +88,7 @@ export default function Home() {
   async function handleGoogle() {
     await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin }
+      options: { redirectTo: window.location.origin },
     });
   }
 
@@ -102,14 +118,18 @@ export default function Home() {
         <>
           <section style={{ marginTop: 24, padding: 16, border: '1px solid #444' }}>
             <h2>Email + Password</h2>
-            <input placeholder="email" value={email} onChange={e => setEmail(e.target.value)} />
-            <input placeholder="password" type="password" value={pw} onChange={e => setPw(e.target.value)} />
+            <input placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input placeholder="password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
             <button onClick={handleEmailPassword}>Sign up / Sign in</button>
           </section>
 
           <section style={{ marginTop: 16, padding: 16, border: '1px solid #444' }}>
             <h2>Magic Link</h2>
-            <input placeholder="email for magic link" value={magicEmail} onChange={e => setMagicEmail(e.target.value)} />
+            <input
+              placeholder="email for magic link"
+              value={magicEmail}
+              onChange={(e) => setMagicEmail(e.target.value)}
+            />
             <button onClick={handleMagicLink}>Send link</button>
           </section>
 
@@ -122,13 +142,23 @@ export default function Home() {
 
       {!!sessionUserId && (
         <section style={{ marginTop: 24, padding: 16, border: '1px solid #444' }}>
-          <p><strong>User:</strong> {sessionUserId}</p>
-          <p><strong>Role:</strong> {profile?.role ?? '—'}</p>
-          <p><strong>Username:</strong> {profile?.username ?? '(not set)'}</p>
+          <p>
+            <strong>User:</strong> {sessionUserId}
+          </p>
+          <p>
+            <strong>Role:</strong> {profile?.role ?? '—'}
+          </p>
+          <p>
+            <strong>Username:</strong> {profile?.username ?? '(not set)'}
+          </p>
 
           {!profile?.username && (
             <div style={{ marginTop: 12 }}>
-              <input placeholder="choose a username" value={username} onChange={e => setUsername(e.target.value)} />
+              <input
+                placeholder="choose a username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
               <button onClick={saveUsername}>Save username</button>
             </div>
           )}
@@ -142,9 +172,19 @@ export default function Home() {
       <p style={{ marginTop: 16, color: '#888' }}>status: {status}</p>
 
       <style jsx global>{`
-        input { display:block; margin:8px 0; padding:8px; width:100%; }
-        button { padding:8px 12px; }
-        h1,h2 { margin: 0 0 8px 0; }
+        input {
+          display: block;
+          margin: 8px 0;
+          padding: 8px;
+          width: 100%;
+        }
+        button {
+          padding: 8px 12px;
+        }
+        h1,
+        h2 {
+          margin: 0 0 8px 0;
+        }
       `}</style>
     </main>
   );
