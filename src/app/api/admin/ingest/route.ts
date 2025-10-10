@@ -1,4 +1,3 @@
-// src/app/api/admin/ingest/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRoleFromHeader } from '@/lib/requireRole';
 import { ODDS_BASE, ODDS_KEY, sportKey } from '@/lib/oddsapi';
@@ -15,35 +14,32 @@ type SnapshotSide = 'home' | 'away' | 'over' | 'under';
 type SnapshotRow = {
   event_id: string;
   bookmaker: string;
-  market: MarketKey;
+  market: 'moneyline' | 'spread' | 'total';
   side: SnapshotSide;
   american_odds: number;
   line: number | null;
+  captured_at?: string;
 };
 
-const BOOK_PRIORITY = ['betmgm', 'draftkings', 'fanduel', 'caesars', 'pointsbet', 'betus', 'wynnbet'];
+const BOOK_PRIORITY = ['betmgm','draftkings','fanduel','caesars','pointsbet','betus','wynnbet'];
 
-function pickBookmaker(
-  g: Game
-): (Game['bookmakers'][number]) | null {
+const MARKET_MAP: Record<MarketKey, 'moneyline' | 'spread' | 'total'> = {
+  h2h: 'moneyline',
+  spreads: 'spread',
+  totals: 'total',
+};
+
+function pickBookmaker(g: Game): (Game['bookmakers'][number]) | null {
   for (const key of BOOK_PRIORITY) {
-    const b = g.bookmakers.find(
-      (b) => b.key === key && (b.markets?.length ?? 0) > 0
-    );
+    const b = g.bookmakers.find(b => b.key === key && (b.markets?.length ?? 0) > 0);
     if (b) return b;
   }
-  return g.bookmakers.find((b) => (b.markets?.length ?? 0) > 0) ?? null;
+  return g.bookmakers.find(b => (b.markets?.length ?? 0) > 0) ?? null;
 }
 
-function outcomeSide(
-  marketKey: string,
-  oName: string,
-  homeTeam: string
-): SnapshotSide {
+function outcomeSide(marketKey: string, oName: string, homeTeam: string): SnapshotSide {
   const name = oName.toLowerCase();
-  if (marketKey === 'totals') {
-    return name.includes('over') ? 'over' : 'under';
-  }
+  if (marketKey === 'totals') return name.includes('over') ? 'over' : 'under';
   return name.includes(homeTeam.toLowerCase()) ? 'home' : 'away';
 }
 
@@ -52,28 +48,26 @@ export async function POST(req: NextRequest) {
 
   const sport = (req.nextUrl.searchParams.get('sport') ?? 'nfl') as 'nfl' | 'nba' | 'nhl' | 'ncaaf';
 
-  // All books; we’ll select the first usable per game.
   const url =
     `${ODDS_BASE}/sports/${sportKey(sport)}/odds` +
     `?apiKey=${ODDS_KEY}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
 
   const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) {
-    return NextResponse.json({ ok: false, error: `odds api ${res.status}` }, { status: 400 });
-  }
+  if (!res.ok) return NextResponse.json({ ok: false, error: `odds api ${res.status}` }, { status: 400 });
 
   const games: Game[] = await res.json();
 
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false } }
   );
 
   let eventsUpserted = 0;
   let snapsInserted = 0;
 
   for (const g of games) {
-    const { data: ev } = await supabase
+    const { data: ev, error: evErr } = await supabase
       .from('sports_events')
       .upsert(
         {
@@ -89,6 +83,10 @@ export async function POST(req: NextRequest) {
       .select('id')
       .single();
 
+    if (evErr) {
+      console.error('events upsert failed', evErr);
+      continue;
+    }
     if (!ev?.id) continue;
     eventsUpserted++;
 
@@ -99,29 +97,31 @@ export async function POST(req: NextRequest) {
 
     for (const m of bookmaker.markets ?? []) {
       if (!m?.outcomes?.length) continue;
-      const marketKey = (m.key as MarketKey);
+      const marketKey = m.key as MarketKey;
+      if (marketKey !== 'h2h' && marketKey !== 'spreads' && marketKey !== 'totals') continue;
 
       for (const o of m.outcomes) {
         rows.push({
           event_id: ev.id,
           bookmaker: bookmaker.key,
-          market: marketKey,
+          market: MARKET_MAP[marketKey],                 // normalize
           side: outcomeSide(marketKey, o.name, g.home_team),
           american_odds: Number(o.price),
           line: typeof o.point === 'number' ? o.point : (o.point == null ? null : Number(o.point)),
+          // captured_at omitted; default now() on column
         });
       }
     }
 
     if (rows.length) {
       const { error } = await supabase.from('event_odds_snapshots').insert(rows);
-      if (!error) snapsInserted += rows.length;
+      if (error) {
+        console.error('snapshot insert failed', { event_id: ev.id, error });
+      } else {
+        snapsInserted += rows.length;
+      }
     }
   }
 
-  return NextResponse.json({
-    ok: true,
-    events_upserted: eventsUpserted,
-    snapshots_inserted: snapsInserted,
-  });
+  return NextResponse.json({ ok: true, events_upserted: eventsUpserted, snapshots_inserted: snapsInserted });
 }
