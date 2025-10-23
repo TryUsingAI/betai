@@ -16,7 +16,6 @@ export default async function DashboardPage() {
   noStore();
 
   const store = await cookies();
-
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -32,13 +31,13 @@ export default async function DashboardPage() {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) redirect('/');
 
-  // Wallet (keeps your current table/column)
+  // Wallet
   const { data: wallet } = await supabase
     .from('wallets')
     .select('balance_cents')
     .single();
 
-  // COUNTS SHOULD COME FROM bet_slips, NOT bets
+  // Counts from bet_slips
   const { count: openSlips } = await supabase
     .from('bet_slips')
     .select('id', { count: 'exact', head: true })
@@ -50,13 +49,16 @@ export default async function DashboardPage() {
     .select('id', { count: 'exact', head: true })
     .eq('user_id', auth.user.id);
 
-  // Keep your existing list source to avoid breaking UI.
-  // If `bets` is a view, you can switch it later to mirror bet_slips.
-  const { data: bets } = await supabase
-    .from('bets')
-    .select(
-      'id, created_at, status, stake_cents, potential_payout_cents, bet_legs(id,event_id,market,side,line,american_odds,selection,price)'
-    )
+  // Recent bets list from bet_slips
+  const { data: slips } = await supabase
+    .from('bet_slips')
+    .select(`
+      id, created_at, status, stake_cents, potential_payout_cents,
+      bet_legs (
+        id, event_id, market, side, line, american_odds, selection, price
+      )
+    `)
+    .eq('user_id', auth.user.id)
     .order('created_at', { ascending: false })
     .limit(50);
 
@@ -82,7 +84,7 @@ export default async function DashboardPage() {
       <section>
         <h2 className="text-lg font-semibold mb-3">Recent Bets</h2>
         <div className="border rounded divide-y">
-          {(bets ?? []).map((b: any) => (
+          {(slips ?? []).map((b: any) => (
             <div key={b.id} className="p-4">
               <div className="flex items-center justify-between">
                 <div className="font-mono text-sm">{b.id}</div>
@@ -113,7 +115,7 @@ export default async function DashboardPage() {
               </div>
             </div>
           ))}
-          {(bets ?? []).length === 0 && (
+          {(slips ?? []).length === 0 && (
             <div className="p-6 text-sm opacity-70">No bets yet.</div>
           )}
         </div>
