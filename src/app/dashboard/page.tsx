@@ -1,5 +1,5 @@
 // src/app/dashboard/page.tsx
-export const revalidate = 0; // no ISR
+export const revalidate = 0;
 export const fetchCache = 'force-no-store';
 
 import { unstable_noStore as noStore } from 'next/cache';
@@ -31,13 +31,11 @@ export default async function DashboardPage() {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) redirect('/');
 
-  // Wallet
   const { data: wallet } = await supabase
     .from('wallets')
     .select('balance_cents')
     .single();
 
-  // Counts from bet_slips
   const { count: openSlips } = await supabase
     .from('bet_slips')
     .select('id', { count: 'exact', head: true })
@@ -49,7 +47,6 @@ export default async function DashboardPage() {
     .select('id', { count: 'exact', head: true })
     .eq('user_id', auth.user.id);
 
-  // Recent bets list from bet_slips
   const { data: slips } = await supabase
     .from('bet_slips')
     .select(`
@@ -65,6 +62,8 @@ export default async function DashboardPage() {
   return (
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-semibold">Your Dashboard</h1>
+      {/* TEMP: show current auth UID to align with DB */}
+      <div className="text-xs opacity-60">uid: {auth.user.id}</div>
 
       <section className="grid gap-4 md:grid-cols-3">
         <div className="border rounded p-4">
